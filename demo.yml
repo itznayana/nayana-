@@ -1,31 +1,133 @@
 ---
-- name: Linux Server Health Check
+- name: Linux Server Health Check Automation
   hosts: all
   become: true
   gather_facts: yes
 
+  vars:
+    threshold: 80
+
   tasks:
 
-    - name: Get CPU Usage
+    #################################################################
+    # CPU CHECK
+    #################################################################
+
+    - name: Get CPU Usage Before
       shell: "top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}'"
-      register: cpu_usage
+      register: cpu_before
 
-    - name: Get Memory Usage
+    - name: Get Top 5 CPU Processes
+      shell: "ps -eo pid,comm,%cpu --sort=-%cpu | head -6"
+      register: top_cpu_processes
+      when: cpu_before.stdout | float > threshold
+
+    - name: Get CPU Usage After
+      shell: "top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}'"
+      register: cpu_after
+      when: cpu_before.stdout | float > threshold
+
+    #################################################################
+    # MEMORY CHECK
+    #################################################################
+
+    - name: Get Memory Usage Before
       shell: "free | grep Mem | awk '{print ($3/$2) * 100.0}'"
-      register: memory_usage
+      register: memory_before
 
-    - name: Get Disk Usage
+    - name: Clear Memory Cache
+      shell: |
+        sync
+        echo 3 > /proc/sys/vm/drop_caches
+      when: memory_before.stdout | float > threshold
+
+    - name: Get Memory Usage After
+      shell: "free | grep Mem | awk '{print ($3/$2) * 100.0}'"
+      register: memory_after
+      when: memory_before.stdout | float > threshold
+
+    #################################################################
+    # DISK CHECK
+    #################################################################
+
+    - name: Get Disk Usage Before
       shell: "df -h / | awk 'NR==2 {print $5}' | sed 's/%//g'"
-      register: disk_usage
+      register: disk_before
 
-    - name: Display CPU Usage
-      debug:
-        msg: "CPU Usage = {{ cpu_usage.stdout }} %"
+    - name: Delete Temporary Files
+      shell: "rm -rf /tmp/*"
+      when: disk_before.stdout | int > threshold
 
-    - name: Display Memory Usage
-      debug:
-        msg: "Memory Usage = {{ memory_usage.stdout }} %"
+    - name: Clean Old Logs
+      shell: "journalctl --vacuum-time=7d"
+      when: disk_before.stdout | int > threshold
 
-    - name: Display Disk Usage
+    - name: Get Disk Usage After
+      shell: "df -h / | awk 'NR==2 {print $5}' | sed 's/%//g'"
+      register: disk_after
+      when: disk_before.stdout | int > threshold
+
+    #################################################################
+    # HEALTHY SERVER OUTPUT
+    #################################################################
+
+    - name: Healthy Server Status
       debug:
-        msg: "Disk Usage = {{ disk_usage.stdout }} %"
+        msg:
+          - "========== HEALTH CHECK RESULT =========="
+          - "CPU Usage : {{ cpu_before.stdout }} %"
+          - "Memory Usage : {{ memory_before.stdout }} %"
+          - "Disk Usage : {{ disk_before.stdout }} %"
+          - "Threshold : 80 %"
+          - "Server Status : HEALTHY"
+          - "Action : Close Ticket"
+      when:
+        - cpu_before.stdout | float < threshold
+        - memory_before.stdout | float < threshold
+        - disk_before.stdout | int < threshold
+
+    #################################################################
+    # CPU THRESHOLD BREACH
+    #################################################################
+
+    - name: CPU Breach Details
+      debug:
+        msg:
+          - "========== CPU THRESHOLD BREACHED =========="
+          - "CPU Before : {{ cpu_before.stdout }} %"
+          - "{{ top_cpu_processes.stdout }}"
+          - "CPU After : {{ cpu_after.stdout }}"
+          - "Threshold : 80 %"
+          - "Action : Route To Manual Queue"
+      when: cpu_before.stdout | float > threshold
+
+    #################################################################
+    # MEMORY THRESHOLD BREACH
+    #################################################################
+
+    - name: Memory Breach Details
+      debug:
+        msg:
+          - "========== MEMORY THRESHOLD BREACHED =========="
+          - "Memory Before : {{ memory_before.stdout }} %"
+          - "Action Taken : Cache Cleared"
+          - "Memory After : {{ memory_after.stdout }} %"
+          - "Threshold : 80 %"
+          - "Action : Route To Manual Queue"
+      when: memory_before.stdout | float > threshold
+
+    #################################################################
+    # DISK THRESHOLD BREACH
+    #################################################################
+
+    - name: Disk Breach Details
+      debug:
+        msg:
+          - "========== DISK THRESHOLD BREACHED =========="
+          - "Disk Before : {{ disk_before.stdout }} %"
+          - "Action Taken : Deleted Temp Files"
+          - "Action Taken : Cleaned Old Logs"
+          - "Disk After : {{ disk_after.stdout }} %"
+          - "Threshold : 80 %"
+          - "Action : Route To Manual Queue"
+      when: disk_before.stdout | int > threshold

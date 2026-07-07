@@ -1,8 +1,31 @@
 ---
-- name: Check connectivity to hosts
+- name: Linux Server Health Check
   hosts: all
-  gather_facts: no
- 
+  become: true
+  gather_facts: yes
+
   tasks:
-    - name: Ping all hosts
-      ansible.builtin.ping:
+
+    - name: Get CPU Usage
+      shell: "top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}'"
+      register: cpu_usage
+
+    - name: Get Memory Usage
+      shell: "free | grep Mem | awk '{print ($3/$2) * 100.0}'"
+      register: memory_usage
+
+    - name: Get Disk Usage
+      shell: "df -h / | awk 'NR==2 {print $5}' | sed 's/%//g'"
+      register: disk_usage
+
+    - name: Display CPU Usage
+      debug:
+        msg: "CPU Usage = {{ cpu_usage.stdout }} %"
+
+    - name: Display Memory Usage
+      debug:
+        msg: "Memory Usage = {{ memory_usage.stdout }} %"
+
+    - name: Display Disk Usage
+      debug:
+        msg: "Disk Usage = {{ disk_usage.stdout }} %"

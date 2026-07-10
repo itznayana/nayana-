@@ -6,6 +6,10 @@
 
   vars:
     threshold: 80
+    snow_url: "https://nowlearning-nlinst04395162-8xqeq-0001.lab.service-now.com"
+    snow_user: "admin"
+    snow_password: "2NBHVSMh2zge"
+    incident_sys_id: "b568707c214203107f44dc408768e8a5"
 
   tasks:
 
@@ -68,7 +72,15 @@
       when: disk_before.stdout | int > threshold
 
     #################################################################
-    # HEALTHY SERVER OUTPUT
+    # DETERMINE HEALTH STATUS
+    #################################################################
+
+    - name: Set Server Status
+      set_fact:
+        server_healthy: "{{ (cpu_before.stdout | float < threshold) and (memory_before.stdout | float < threshold) and (disk_before.stdout | int < threshold) }}"
+
+    #################################################################
+    # HEALTHY SERVER
     #################################################################
 
     - name: Healthy Server Status
@@ -81,10 +93,30 @@
           - "Threshold : 80 %"
           - "Server Status : HEALTHY"
           - "Action : Close Ticket"
-      when:
-        - cpu_before.stdout | float < threshold
-        - memory_before.stdout | float < threshold
-        - disk_before.stdout | int < threshold
+      when: server_healthy
+
+    - name: Update ServiceNow Work Notes And Close Ticket
+      uri:
+        url: "{{ snow_url }}/api/now/table/incident/{{ incident_sys_id }}"
+        method: PATCH
+        user: "{{ snow_user }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: true
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          work_notes: |
+            HEALTH CHECK RESULT
+
+            CPU Usage : {{ cpu_before.stdout }} %
+            Memory Usage : {{ memory_before.stdout }} %
+            Disk Usage : {{ disk_before.stdout }} %
+
+            Status : HEALTHY
+            Action : Ticket Closed Automatically
+          state: "7"
+      when: server_healthy
 
     #################################################################
     # CPU THRESHOLD BREACH
@@ -131,3 +163,31 @@
           - "Threshold : 80 %"
           - "Action : Route To Manual Queue"
       when: disk_before.stdout | int > threshold
+
+    #################################################################
+    # UPDATE TICKET FOR BREACH
+    #################################################################
+
+    - name: Update ServiceNow Work Notes And Route Manual Queue
+      uri:
+        url: "{{ snow_url }}/api/now/table/incident/{{ incident_sys_id }}"
+        method: PATCH
+        user: "{{ snow_user }}"
+        password: "{{ snow_password }}"
+        force_basic_auth: true
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          work_notes: |
+            THRESHOLD BREACHED
+
+            CPU Usage : {{ cpu_before.stdout }} %
+            Memory Usage : {{ memory_before.stdout }} %
+            Disk Usage : {{ disk_before.stdout }} %
+
+            Threshold : 80 %
+
+            Action : Route To Manual Queue
+          state: "2"
+      when: not server_healthy

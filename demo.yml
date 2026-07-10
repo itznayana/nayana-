@@ -1,193 +1,293 @@
 ---
+# ============================================================================
+# Linux Server Health Check Automation
+# ServiceNow <-> AAP <-> AWS Ubuntu Server
+# ============================================================================
+
 - name: Linux Server Health Check Automation
   hosts: all
   become: true
-  gather_facts: yes
+  gather_facts: true
 
   vars:
     threshold: 80
-    snow_url: "https://nowlearning-nlinst04395162-8xqeq-0001.lab.service-now.com"
-    snow_user: "admin"
-    snow_password: "2NBHVSMh2zge"
-    incident_sys_id: "b568707c214203107f44dc408768e8a5"
+
+    servicenow_instance: "https://nowlearning-nlinst04395162-8xqeq-0001.lab.service-now.com"
+    servicenow_user: "admin"
+    servicenow_password: "{{ servicenow_password }}"
+
+    # Passed in from ServiceNow REST Message / AAP extra_vars at launch time
+    incident_sys_id: "{{ incident_sys_id }}"
+    incident_number: "{{ incident_number | default('') }}"
+
+    # Manual queue assignment group sys_id (Linux Support / Infra queue in the instance)
+    manual_queue_group_sys_id: "{{ manual_queue_group_sys_id | default('') }}"
+
+    close_code_value: "Solved (Permanently)"
+
+    servicenow_incident_url: "{{ servicenow_instance }}/api/now/table/incident/{{ incident_sys_id }}"
 
   tasks:
 
-    #################################################################
-    # CPU CHECK
-    #################################################################
+    # ------------------------------------------------------------------------
+    # CAPTURE BEFORE VALUES
+    # ------------------------------------------------------------------------
 
-    - name: Get CPU Usage Before
-      shell: "top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}'"
-      register: cpu_before
+    - name: Capture CPU usage (before)
+      ansible.builtin.shell: |
+        set -o pipefail
+        top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}'
+      args:
+        executable: /bin/bash
+      register: cpu_before_raw
+      changed_when: false
 
-    - name: Get Top 5 CPU Processes
-      shell: "ps -eo pid,comm,%cpu --sort=-%cpu | head -6"
-      register: top_cpu_processes
-      when: cpu_before.stdout | float > threshold
+    - name: Capture Memory usage (before)
+      ansible.builtin.shell: |
+        set -o pipefail
+        free | awk 'FNR==2{printf "%.2f", ($3/$2)*100}'
+      args:
+        executable: /bin/bash
+      register: mem_before_raw
+      changed_when: false
 
-    - name: Get CPU Usage After
-      shell: "top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}'"
-      register: cpu_after
-      when: cpu_before.stdout | float > threshold
+    - name: Capture Disk usage (before)
+      ansible.builtin.shell: |
+        set -o pipefail
+        df -h / | awk 'FNR==2{print $5}' | tr -d '%'
+      args:
+        executable: /bin/bash
+      register: disk_before_raw
+      changed_when: false
 
-    #################################################################
-    # MEMORY CHECK
-    #################################################################
+    - name: Capture Top 5 CPU consuming processes
+      ansible.builtin.shell: |
+        set -o pipefail
+        ps -eo pid,comm,%cpu --sort=-%cpu | head -6
+      args:
+        executable: /bin/bash
+      register: top5_cpu_processes
+      changed_when: false
 
-    - name: Get Memory Usage Before
-      shell: "free | grep Mem | awk '{print ($3/$2) * 100.0}'"
-      register: memory_before
+    - name: Set before-value facts
+      ansible.builtin.set_fact:
+        cpu_before: "{{ cpu_before_raw.stdout | trim | float }}"
+        mem_before: "{{ mem_before_raw.stdout | trim | float }}"
+        disk_before: "{{ disk_before_raw.stdout | trim | float }}"
 
-    - name: Clear Memory Cache
-      shell: |
-        sync
-        echo 3 > /proc/sys/vm/drop_caches
-      when: memory_before.stdout | float > threshold
+    - name: Determine breach status per resource
+      ansible.builtin.set_fact:
+        cpu_breach: "{{ cpu_before | float > threshold | float }}"
+        mem_breach: "{{ mem_before | float > threshold | float }}"
+        disk_breach: "{{ disk_before | float > threshold | float }}"
 
-    - name: Get Memory Usage After
-      shell: "free | grep Mem | awk '{print ($3/$2) * 100.0}'"
-      register: memory_after
-      when: memory_before.stdout | float > threshold
+    - name: Determine overall server health
+      ansible.builtin.set_fact:
+        server_healthy: "{{ not (cpu_breach or mem_breach or disk_breach) }}"
 
-    #################################################################
-    # DISK CHECK
-    #################################################################
+    # ------------------------------------------------------------------------
+    # HEALTHY PATH
+    # ------------------------------------------------------------------------
 
-    - name: Get Disk Usage Before
-      shell: "df -h / | awk 'NR==2 {print $5}' | sed 's/%//g'"
-      register: disk_before
+    - name: HEALTHY PATH - Update work notes and close incident
+      when: server_healthy | bool
+      block:
 
-    - name: Delete Temporary Files
-      shell: "rm -rf /tmp/*"
-      when: disk_before.stdout | int > threshold
+        - name: Build healthy work notes
+          ansible.builtin.set_fact:
+            healthy_work_notes: >-
+              Linux Server Health Check Automation Result:
+              CPU Usage = {{ cpu_before }}%,
+              Memory Usage = {{ mem_before }}%,
+              Disk Usage = {{ disk_before }}%.
+              Threshold = {{ threshold }}%.
+              Server Healthy. No action required.
+              Automation Status: Completed Successfully.
 
-    - name: Clean Old Logs
-      shell: "journalctl --vacuum-time=7d"
-      when: disk_before.stdout | int > threshold
+        - name: Update ServiceNow incident - Healthy and Close
+          ansible.builtin.uri:
+            url: "{{ servicenow_incident_url }}"
+            method: PATCH
+            user: "{{ servicenow_user }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: true
+            headers:
+              Content-Type: "application/json"
+              Accept: "application/json"
+            body_format: json
+            body:
+              work_notes: "{{ healthy_work_notes }}"
+              state: "7"
+              close_code: "{{ close_code_value }}"
+              close_notes: "{{ healthy_work_notes }}"
+            status_code: [200, 201]
+            validate_certs: true
+          register: servicenow_healthy_response
 
-    - name: Get Disk Usage After
-      shell: "df -h / | awk 'NR==2 {print $5}' | sed 's/%//g'"
-      register: disk_after
-      when: disk_before.stdout | int > threshold
+        - name: Show ServiceNow healthy update response
+          ansible.builtin.debug:
+            msg: "ServiceNow incident closed successfully. Status: {{ servicenow_healthy_response.status }}"
 
-    #################################################################
-    # DETERMINE HEALTH STATUS
-    #################################################################
+    # ------------------------------------------------------------------------
+    # BREACH PATH
+    # ------------------------------------------------------------------------
 
-    - name: Set Server Status
-      set_fact:
-        server_healthy: "{{ (cpu_before.stdout | float < threshold) and (memory_before.stdout | float < threshold) and (disk_before.stdout | int < threshold) }}"
+    - name: BREACH PATH - Remediate and update ServiceNow
+      when: not (server_healthy | bool)
+      block:
 
-    #################################################################
-    # HEALTHY SERVER
-    #################################################################
+        # ---------------- CPU REMEDIATION ----------------
 
-    - name: Healthy Server Status
-      debug:
-        msg:
-          - "========== HEALTH CHECK RESULT =========="
-          - "CPU Usage : {{ cpu_before.stdout }} %"
-          - "Memory Usage : {{ memory_before.stdout }} %"
-          - "Disk Usage : {{ disk_before.stdout }} %"
-          - "Threshold : 80 %"
-          - "Server Status : HEALTHY"
-          - "Action : Close Ticket"
-      when: server_healthy
+        - name: CPU breach block
+          when: cpu_breach | bool
+          block:
 
-    - name: Update ServiceNow Work Notes And Close Ticket
-      uri:
-        url: "{{ snow_url }}/api/now/table/incident/{{ incident_sys_id }}"
-        method: PATCH
-        user: "{{ snow_user }}"
-        password: "{{ snow_password }}"
-        force_basic_auth: true
-        headers:
-          Content-Type: "application/json"
-        body_format: json
-        body:
-          work_notes: |
-            HEALTH CHECK RESULT
+            - name: Capture CPU usage (after)
+              ansible.builtin.shell: |
+                set -o pipefail
+                top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}'
+              args:
+                executable: /bin/bash
+              register: cpu_after_raw
+              changed_when: false
 
-            CPU Usage : {{ cpu_before.stdout }} %
-            Memory Usage : {{ memory_before.stdout }} %
-            Disk Usage : {{ disk_before.stdout }} %
+            - name: Set CPU after fact and action taken
+              ansible.builtin.set_fact:
+                cpu_after: "{{ cpu_after_raw.stdout | trim | float }}"
+                cpu_action_taken: >-
+                  Top 5 CPU consuming processes captured for review:
+                  {{ top5_cpu_processes.stdout_lines | join(' | ') }}
 
-            Status : HEALTHY
-            Action : Ticket Closed Automatically
-          state: "7"
-      when: server_healthy
+        - name: Set CPU defaults when not breached
+          ansible.builtin.set_fact:
+            cpu_after: "{{ cpu_before }}"
+            cpu_action_taken: "No action required. CPU within threshold."
+          when: not (cpu_breach | bool)
 
-    #################################################################
-    # CPU THRESHOLD BREACH
-    #################################################################
+        # ---------------- MEMORY REMEDIATION ----------------
 
-    - name: CPU Breach Details
-      debug:
-        msg:
-          - "========== CPU THRESHOLD BREACHED =========="
-          - "CPU Before : {{ cpu_before.stdout }} %"
-          - "{{ top_cpu_processes.stdout }}"
-          - "CPU After : {{ cpu_after.stdout }}"
-          - "Threshold : 80 %"
-          - "Action : Route To Manual Queue"
-      when: cpu_before.stdout | float > threshold
+        - name: Memory breach block
+          when: mem_breach | bool
+          block:
 
-    #################################################################
-    # MEMORY THRESHOLD BREACH
-    #################################################################
+            - name: Clear system cache to free memory
+              ansible.builtin.shell: |
+                sync
+                echo 3 > /proc/sys/vm/drop_caches
+              args:
+                executable: /bin/bash
+              register: mem_clear_result
+              changed_when: true
 
-    - name: Memory Breach Details
-      debug:
-        msg:
-          - "========== MEMORY THRESHOLD BREACHED =========="
-          - "Memory Before : {{ memory_before.stdout }} %"
-          - "Action Taken : Cache Cleared"
-          - "Memory After : {{ memory_after.stdout }} %"
-          - "Threshold : 80 %"
-          - "Action : Route To Manual Queue"
-      when: memory_before.stdout | float > threshold
+            - name: Capture Memory usage (after)
+              ansible.builtin.shell: |
+                set -o pipefail
+                free | awk 'FNR==2{printf "%.2f", ($3/$2)*100}'
+              args:
+                executable: /bin/bash
+              register: mem_after_raw
+              changed_when: false
 
-    #################################################################
-    # DISK THRESHOLD BREACH
-    #################################################################
+            - name: Set Memory after fact and action taken
+              ansible.builtin.set_fact:
+                mem_after: "{{ mem_after_raw.stdout | trim | float }}"
+                mem_action_taken: "System cache cleared using drop_caches to free memory."
 
-    - name: Disk Breach Details
-      debug:
-        msg:
-          - "========== DISK THRESHOLD BREACHED =========="
-          - "Disk Before : {{ disk_before.stdout }} %"
-          - "Action Taken : Deleted Temp Files"
-          - "Action Taken : Cleaned Old Logs"
-          - "Disk After : {{ disk_after.stdout }} %"
-          - "Threshold : 80 %"
-          - "Action : Route To Manual Queue"
-      when: disk_before.stdout | int > threshold
+        - name: Set Memory defaults when not breached
+          ansible.builtin.set_fact:
+            mem_after: "{{ mem_before }}"
+            mem_action_taken: "No action required. Memory within threshold."
+          when: not (mem_breach | bool)
 
-    #################################################################
-    # UPDATE TICKET FOR BREACH
-    #################################################################
+        # ---------------- DISK REMEDIATION ----------------
 
-    - name: Update ServiceNow Work Notes And Route Manual Queue
-      uri:
-        url: "{{ snow_url }}/api/now/table/incident/{{ incident_sys_id }}"
-        method: PATCH
-        user: "{{ snow_user }}"
-        password: "{{ snow_password }}"
-        force_basic_auth: true
-        headers:
-          Content-Type: "application/json"
-        body_format: json
-        body:
-          work_notes: |
-            THRESHOLD BREACHED
+        - name: Disk breach block
+          when: disk_breach | bool
+          block:
 
-            CPU Usage : {{ cpu_before.stdout }} %
-            Memory Usage : {{ memory_before.stdout }} %
-            Disk Usage : {{ disk_before.stdout }} %
+            - name: Delete temporary files
+              ansible.builtin.shell: |
+                find /tmp -type f -mtime +1 -delete
+              args:
+                executable: /bin/bash
+              register: disk_temp_cleanup
+              changed_when: true
 
-            Threshold : 80 %
+            - name: Clean old log files
+              ansible.builtin.shell: |
+                journalctl --vacuum-time=3d || true
+                find /var/log -type f -name "*.log" -mtime +7 -exec truncate -s 0 {} \;
+              args:
+                executable: /bin/bash
+              register: disk_log_cleanup
+              changed_when: true
 
-            Action : Route To Manual Queue
-          state: "2"
-      when: not server_healthy
+            - name: Capture Disk usage (after)
+              ansible.builtin.shell: |
+                set -o pipefail
+                df -h / | awk 'FNR==2{print $5}' | tr -d '%'
+              args:
+                executable: /bin/bash
+              register: disk_after_raw
+              changed_when: false
+
+            - name: Set Disk after fact and action taken
+              ansible.builtin.set_fact:
+                disk_after: "{{ disk_after_raw.stdout | trim | float }}"
+                disk_action_taken: "Temporary files older than 1 day deleted. Logs older than 7 days vacuumed/truncated."
+
+        - name: Set Disk defaults when not breached
+          ansible.builtin.set_fact:
+            disk_after: "{{ disk_before }}"
+            disk_action_taken: "No action required. Disk within threshold."
+          when: not (disk_breach | bool)
+
+        # ---------------- BUILD BREACH WORK NOTES ----------------
+
+        - name: Build breach work notes
+          ansible.builtin.set_fact:
+            breach_work_notes: >-
+              Linux Server Health Check Automation Result: THRESHOLD BREACH DETECTED.
+              Threshold = {{ threshold }}%.
+
+              CPU -> Before: {{ cpu_before }}%, After: {{ cpu_after }}%.
+              Action Taken: {{ cpu_action_taken }}
+
+              Memory -> Before: {{ mem_before }}%, After: {{ mem_after }}%.
+              Action Taken: {{ mem_action_taken }}
+
+              Disk -> Before: {{ disk_before }}%, After: {{ disk_after }}%.
+              Action Taken: {{ disk_action_taken }}
+
+              Automation Status: Remediation attempted. Routed to Manual Queue for review.
+
+        - name: Update ServiceNow incident - Breach and assign manual queue
+          ansible.builtin.uri:
+            url: "{{ servicenow_incident_url }}"
+            method: PATCH
+            user: "{{ servicenow_user }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: true
+            headers:
+              Content-Type: "application/json"
+              Accept: "application/json"
+            body_format: json
+            body: >-
+              {{
+                {
+                  "work_notes": breach_work_notes,
+                  "state": "2",
+                  "assignment_group": manual_queue_group_sys_id
+                } if manual_queue_group_sys_id | length > 0 else
+                {
+                  "work_notes": breach_work_notes,
+                  "state": "2"
+                }
+              }}
+            status_code: [200, 201]
+            validate_certs: true
+          register: servicenow_breach_response
+
+        - name: Show ServiceNow breach update response
+          ansible.builtin.debug:
+            msg: "ServiceNow incident updated and routed to manual queue. Status: {{ servicenow_breach_response.status }}"

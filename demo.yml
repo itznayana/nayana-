@@ -5,7 +5,7 @@
   gather_facts: true
 
   vars:
-    threshold: 80
+    threshold: 1
 
     servicenow_instance: "https://nowlearning-nlinst04395162-8xqeq-0001.lab.service-now.com"
     servicenow_user: "admin"

@@ -11,7 +11,7 @@
     servicenow_user: "admin"
     servicenow_password: "2NBHVSMh2zge"
 
-    incident_sys_id: "b568707c214203107f44dc408768e8a5"
+  
 
     close_code_value: "Solution provided"
 

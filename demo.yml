@@ -5,7 +5,7 @@
   gather_facts: true
 
   vars:
-    threshold: 1
+    threshold: 80
 
     servicenow_instance: "https://nowlearning-nlinst04395162-8xqeq-0001.lab.service-now.com"
     servicenow_user: "admin"
@@ -41,7 +41,7 @@
 
     - name: Determine health
       set_fact:
-        server_healthy: "{{ (cpu_before | float < 80) and (mem_before | float < 80) and (disk_before | float < 80) }}"
+        server_healthy: "{{ (cpu_before | float < threshold | float) and (mem_before | float < threshold | float) and (disk_before | float < threshold | float) }}"
 
     #################################################################
     # HEALTHY PATH
@@ -125,4 +125,5 @@
           - "CPU={{ cpu_before }}"
           - "MEMORY={{ mem_before }}"
           - "DISK={{ disk_before }}"
+          - "THRESHOLD={{ threshold }}"
           - "HEALTHY={{ server_healthy }}"

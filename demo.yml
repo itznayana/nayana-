@@ -15,82 +15,55 @@
 
     close_code_value: "Solved (Permanently)"
 
-    servicenow_incident_url: "{{ servicenow_instance }}/api/now/table/incident/{{ incident_sys_id }}"
+    servicenow_incident_url: "https://nowlearning-nlinst04395162-8xqeq-0001.lab.service-now.com/api/now/table/incident/b568707c214203107f44dc408768e8a5"
 
   tasks:
 
-    - name: Capture CPU usage (before)
+    - name: Capture CPU usage
       shell: |
-        set -o pipefail
         top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}'
-      args:
-        executable: /bin/bash
       register: cpu_before_raw
       changed_when: false
 
-    - name: Capture Memory usage (before)
+    - name: Capture Memory usage
       shell: |
-        set -o pipefail
         free | awk 'FNR==2{printf "%.2f", ($3/$2)*100}'
-      args:
-        executable: /bin/bash
       register: mem_before_raw
       changed_when: false
 
-    - name: Capture Disk usage (before)
+    - name: Capture Disk usage
       shell: |
-        set -o pipefail
         df -h / | awk 'FNR==2{print $5}' | tr -d '%'
-      args:
-        executable: /bin/bash
       register: disk_before_raw
       changed_when: false
 
-    - name: Capture Top 5 CPU consuming processes
-      shell: |
-        set -o pipefail
-        ps -eo pid,comm,%cpu --sort=-%cpu | head -6
-      args:
-        executable: /bin/bash
-      register: top5_cpu_processes
-      changed_when: false
-
-    - name: Set before-value facts
+    - name: Set values
       set_fact:
-        cpu_before: "{{ cpu_before_raw.stdout | trim | float }}"
-        mem_before: "{{ mem_before_raw.stdout | trim | float }}"
-        disk_before: "{{ disk_before_raw.stdout | trim | float }}"
+        cpu_before: "{{ cpu_before_raw.stdout | float }}"
+        mem_before: "{{ mem_before_raw.stdout | float }}"
+        disk_before: "{{ disk_before_raw.stdout | float }}"
 
-    - name: Determine breach status per resource
+    - name: Determine health
       set_fact:
-        cpu_breach: "{{ cpu_before > threshold }}"
-        mem_breach: "{{ mem_before > threshold }}"
-        disk_breach: "{{ disk_before > threshold }}"
-
-    - name: Determine overall server health
-      set_fact:
-        server_healthy: "{{ not (cpu_breach or mem_breach or disk_breach) }}"
+        server_healthy: "{{ (cpu_before | float < 80) and (mem_before | float < 80) and (disk_before | float < 80) }}"
 
     #################################################################
     # HEALTHY SERVER
     #################################################################
 
-    - name: Build healthy work notes
+    - name: Build healthy notes
       when: server_healthy | bool
       set_fact:
         healthy_work_notes: |
-          Linux Server Health Check Automation Result
+          HEALTH CHECK RESULT
 
-          CPU Usage = {{ cpu_before }}%
-          Memory Usage = {{ mem_before }}%
-          Disk Usage = {{ disk_before }}%
+          CPU Usage : {{ cpu_before }} %
+          Memory Usage : {{ mem_before }} %
+          Disk Usage : {{ disk_before }} %
 
-          Threshold = {{ threshold }}%
+          Status : HEALTHY
 
-          Server Healthy
-          Automation Status: Completed Successfully
-
-    - name: Update ServiceNow incident - Healthy and Close
+    - name: Close incident
       when: server_healthy | bool
       uri:
         url: "{{ servicenow_incident_url }}"
@@ -105,111 +78,32 @@
         body:
           work_notes: "{{ healthy_work_notes }}"
           close_code: "{{ close_code_value }}"
-          close_notes: "{{ healthy_work_notes }}"
+          close_notes: "Linux server health check completed successfully."
           state: "7"
-        status_code: [200,201]
+        status_code:
+          - 200
+          - 201
+      register: healthy_result
 
     #################################################################
-    # CPU BREACH
+    # BREACH SERVER
     #################################################################
 
-    - name: Capture CPU usage (after)
-      when: cpu_breach | bool
-      shell: |
-        set -o pipefail
-        top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}'
-      args:
-        executable: /bin/bash
-      register: cpu_after_raw
-      changed_when: false
-
-    - name: Set CPU Values
-      when: cpu_breach | bool
-      set_fact:
-        cpu_after: "{{ cpu_after_raw.stdout | trim | float }}"
-        cpu_action_taken: "Top 5 CPU consuming processes captured."
-
-    #################################################################
-    # MEMORY BREACH
-    #################################################################
-
-    - name: Clear Memory Cache
-      when: mem_breach | bool
-      shell: |
-        sync
-        echo 3 > /proc/sys/vm/drop_caches
-      args:
-        executable: /bin/bash
-
-    - name: Capture Memory usage (after)
-      when: mem_breach | bool
-      shell: |
-        set -o pipefail
-        free | awk 'FNR==2{printf "%.2f", ($3/$2)*100}'
-      args:
-        executable: /bin/bash
-      register: mem_after_raw
-      changed_when: false
-
-    - name: Set Memory Values
-      when: mem_breach | bool
-      set_fact:
-        mem_after: "{{ mem_after_raw.stdout | trim | float }}"
-        mem_action_taken: "Cache Cleared"
-
-    #################################################################
-    # DISK BREACH
-    #################################################################
-
-    - name: Delete Temp Files
-      when: disk_breach | bool
-      shell: |
-        find /tmp -type f -mtime +1 -delete
-      args:
-        executable: /bin/bash
-
-    - name: Clean Logs
-      when: disk_breach | bool
-      shell: |
-        journalctl --vacuum-time=3d || true
-      args:
-        executable: /bin/bash
-
-    - name: Capture Disk usage (after)
-      when: disk_breach | bool
-      shell: |
-        set -o pipefail
-        df -h / | awk 'FNR==2{print $5}' | tr -d '%'
-      args:
-        executable: /bin/bash
-      register: disk_after_raw
-      changed_when: false
-
-    - name: Set Disk Values
-      when: disk_breach | bool
-      set_fact:
-        disk_after: "{{ disk_after_raw.stdout | trim | float }}"
-        disk_action_taken: "Temp Files Deleted And Logs Cleaned"
-
-    #################################################################
-    # BREACH UPDATE
-    #################################################################
-
-    - name: Build breach work notes
+    - name: Build breach notes
       when: not server_healthy | bool
       set_fact:
         breach_work_notes: |
           THRESHOLD BREACH DETECTED
 
-          CPU Before = {{ cpu_before }}
-          Memory Before = {{ mem_before }}
-          Disk Before = {{ disk_before }}
+          CPU Usage : {{ cpu_before }} %
+          Memory Usage : {{ mem_before }} %
+          Disk Usage : {{ disk_before }} %
 
-          Threshold = {{ threshold }}
+          Threshold : {{ threshold }} %
 
-          Automation Status = Routed To Manual Queue
+          Action : Route To Manual Queue
 
-    - name: Update ServiceNow incident - Breach
+    - name: Update incident breach
       when: not server_healthy | bool
       uri:
         url: "{{ servicenow_incident_url }}"
@@ -224,4 +118,15 @@
         body:
           work_notes: "{{ breach_work_notes }}"
           state: "2"
-        status_code: [200,201]
+        status_code:
+          - 200
+          - 201
+      register: breach_result
+
+    - name: Display Result
+      debug:
+        msg:
+          - "CPU={{ cpu_before }}"
+          - "MEMORY={{ mem_before }}"
+          - "DISK={{ disk_before }}"
+          - "HEALTHY={{ server_healthy }}"

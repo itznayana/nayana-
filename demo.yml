@@ -15,7 +15,7 @@
 
     close_code_value: "Solution provided"
 
-    servicenow_incident_url: "https://nowlearning-nlinst04395162-8xqeq-0001.lab.service-now.com/api/now/table/incident/b568707c214203107f44dc408768e8a5"
+    servicenow_incident_url: "{{ servicenow_instance }}/api/now/table/incident/{{ incident_sys_id }}"
 
   tasks:
 

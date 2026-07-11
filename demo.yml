@@ -53,13 +53,13 @@
         healthy_work_notes: |
           HEALTH CHECK RESULT
 
-          Incident Number : {{ incident_number }}
-
           CPU Usage : {{ cpu_before }} %
           Memory Usage : {{ mem_before }} %
           Disk Usage : {{ disk_before }} %
 
           Status : HEALTHY
+
+          Linux server health check completed successfully.
 
     - name: Close incident
       when: server_healthy | bool
@@ -92,8 +92,6 @@
         breach_work_notes: |
           THRESHOLD BREACH DETECTED
 
-          Incident Number : {{ incident_number }}
-
           CPU Usage : {{ cpu_before }} %
           Memory Usage : {{ mem_before }} %
           Disk Usage : {{ disk_before }} %
@@ -124,7 +122,6 @@
     - name: Display Result
       debug:
         msg:
-          - "Incident={{ incident_number }}"
           - "CPU={{ cpu_before }}"
           - "MEMORY={{ mem_before }}"
           - "DISK={{ disk_before }}"

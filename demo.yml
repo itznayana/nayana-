@@ -11,11 +11,7 @@
     servicenow_user: "admin"
     servicenow_password: "2NBHVSMh2zge"
 
-  
-
     close_code_value: "Solution provided"
-
-    servicenow_incident_url: "{{ servicenow_instance }}/api/now/table/incident/{{ incident_sys_id }}"
 
   tasks:
 
@@ -48,7 +44,7 @@
         server_healthy: "{{ (cpu_before | float < 80) and (mem_before | float < 80) and (disk_before | float < 80) }}"
 
     #################################################################
-    # HEALTHY SERVER
+    # HEALTHY PATH
     #################################################################
 
     - name: Build healthy notes
@@ -56,6 +52,8 @@
       set_fact:
         healthy_work_notes: |
           HEALTH CHECK RESULT
+
+          Incident Number : {{ incident_number }}
 
           CPU Usage : {{ cpu_before }} %
           Memory Usage : {{ mem_before }} %
@@ -66,7 +64,7 @@
     - name: Close incident
       when: server_healthy | bool
       uri:
-        url: "{{ servicenow_incident_url }}"
+        url: "{{ servicenow_instance }}/api/now/table/incident/{{ incident_sys_id }}"
         method: PATCH
         user: "{{ servicenow_user }}"
         password: "{{ servicenow_password }}"
@@ -83,10 +81,9 @@
         status_code:
           - 200
           - 201
-      register: healthy_result
 
     #################################################################
-    # BREACH SERVER
+    # BREACH PATH
     #################################################################
 
     - name: Build breach notes
@@ -94,6 +91,8 @@
       set_fact:
         breach_work_notes: |
           THRESHOLD BREACH DETECTED
+
+          Incident Number : {{ incident_number }}
 
           CPU Usage : {{ cpu_before }} %
           Memory Usage : {{ mem_before }} %
@@ -106,7 +105,7 @@
     - name: Update incident breach
       when: not server_healthy | bool
       uri:
-        url: "{{ servicenow_incident_url }}"
+        url: "{{ servicenow_instance }}/api/now/table/incident/{{ incident_sys_id }}"
         method: PATCH
         user: "{{ servicenow_user }}"
         password: "{{ servicenow_password }}"
@@ -121,11 +120,11 @@
         status_code:
           - 200
           - 201
-      register: breach_result
 
     - name: Display Result
       debug:
         msg:
+          - "Incident={{ incident_number }}"
           - "CPU={{ cpu_before }}"
           - "MEMORY={{ mem_before }}"
           - "DISK={{ disk_before }}"

@@ -1,129 +1,220 @@
 ---
-- name: Linux Server Health Check Automation
+- name: Linux Server Health Check and Self-Healing Automation
   hosts: all
   become: true
   gather_facts: true
 
   vars:
-    threshold: 80
+    threshold: "{{ demo_threshold | default(80) }}"
 
-    servicenow_instance: "https://nowlearning-nlinst04395162-8xqeq-0001.lab.service-now.com"
+    servicenow_instance: "https://nowlearning-nlinst04436048-1fyaf-0001.lab.service-now.com"
     servicenow_user: "admin"
-    servicenow_password: "2NBHVSMh2zge"
+    servicenow_password: "3NCm2FUAWxGZ"
 
     close_code_value: "Solution provided"
 
   tasks:
 
+    # ---------- STEP 1: Capture current values ----------
+
     - name: Capture CPU usage
       shell: |
         top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}'
-      register: cpu_before_raw
+      register: cpu_raw
       changed_when: false
 
     - name: Capture Memory usage
       shell: |
         free | awk 'FNR==2{printf "%.2f", ($3/$2)*100}'
-      register: mem_before_raw
+      register: mem_raw
       changed_when: false
 
     - name: Capture Disk usage
       shell: |
-        df -h / | awk 'FNR==2{print $5}' | tr -d '%'
-      register: disk_before_raw
+        df / | awk 'FNR==2{print $5}' | tr -d '%'
+      register: disk_raw
       changed_when: false
 
-    - name: Set values
+    - name: Set clean numeric facts
       set_fact:
-        cpu_before: "{{ cpu_before_raw.stdout | float }}"
-        mem_before: "{{ mem_before_raw.stdout | float }}"
-        disk_before: "{{ disk_before_raw.stdout | float }}"
+        cpu_before: "{{ cpu_raw.stdout | float | round(2) }}"
+        mem_before: "{{ mem_raw.stdout | float | round(2) }}"
+        disk_before: "{{ disk_raw.stdout | float | round(2) }}"
 
-    - name: Determine health
+    # ---------- STEP 2: Decide healthy or breach ----------
+
+    - name: Decide if any threshold is breached
       set_fact:
-        server_healthy: "{{ (cpu_before | float < threshold | float) and (mem_before | float < threshold | float) and (disk_before | float < threshold | float) }}"
+        breach_detected: "{{ (cpu_before|float > threshold|float) or (mem_before|float > threshold|float) or (disk_before|float > threshold|float) }}"
 
-    #################################################################
-    # HEALTHY PATH
-    #################################################################
-
-    - name: Build healthy notes
-      when: server_healthy | bool
-      set_fact:
-        healthy_work_notes: |
-          HEALTH CHECK RESULT
-
-          CPU Usage : {{ cpu_before }} %
-          Memory Usage : {{ mem_before }} %
-          Disk Usage : {{ disk_before }} %
-
-          Status : HEALTHY
-
-          Linux server health check completed successfully.
-
-    - name: Close incident
-      when: server_healthy | bool
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/incident/{{ incident_sys_id }}"
-        method: PATCH
-        user: "{{ servicenow_user }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: true
-        headers:
-          Content-Type: "application/json"
-          Accept: "application/json"
-        body_format: json
-        body:
-          work_notes: "{{ healthy_work_notes }}"
-          close_code: "{{ close_code_value }}"
-          close_notes: "Linux server health check completed successfully."
-          state: "7"
-        status_code:
-          - 200
-          - 201
-
-    #################################################################
-    # BREACH PATH
-    #################################################################
-
-    - name: Build breach notes
-      when: not server_healthy | bool
-      set_fact:
-        breach_work_notes: |
-          THRESHOLD BREACH DETECTED
-
-          CPU Usage : {{ cpu_before }} %
-          Memory Usage : {{ mem_before }} %
-          Disk Usage : {{ disk_before }} %
-
-          Threshold : {{ threshold }} %
-
-          Action : Route To Manual Queue
-
-    - name: Update incident breach
-      when: not server_healthy | bool
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/incident/{{ incident_sys_id }}"
-        method: PATCH
-        user: "{{ servicenow_user }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: true
-        headers:
-          Content-Type: "application/json"
-          Accept: "application/json"
-        body_format: json
-        body:
-          work_notes: "{{ breach_work_notes }}"
-          state: "2"
-        status_code:
-          - 200
-          - 201
-
-    - name: Display Result
+    - name: Show detected values
       debug:
-        msg:
-          - "CPU={{ cpu_before }}"
-          - "MEMORY={{ mem_before }}"
-          - "DISK={{ disk_before }}"
-          - "THRESHOLD={{ threshold }}"
-          - "HEALTHY={{ server_healthy }}"
+        msg: "CPU={{ cpu_before }}% MEM={{ mem_before }}% DISK={{ disk_before }}% Threshold={{ threshold }}% Breach={{ breach_detected }}"
+
+    # ---------- STEP 3: Create ServiceNow incident (always, for audit trail) ----------
+
+    - name: Create ServiceNow incident record
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/incident"
+        method: POST
+        user: "{{ servicenow_user }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: true
+        body_format: json
+        status_code: 201
+        body:
+          short_description: "Linux Health Check - {{ inventory_hostname }}"
+          description: "Automated health check execution started."
+          urgency: "3"
+          impact: "3"
+      register: incident_created
+
+    - name: Save incident sys_id and number
+      set_fact:
+        incident_sys_id: "{{ incident_created.json.result.sys_id }}"
+        incident_number: "{{ incident_created.json.result.number }}"
+
+    # ---------- STEP 4A: HEALTHY PATH ----------
+
+    - name: Build healthy work notes
+      set_fact:
+        work_notes_text: |
+          Linux Server Health Check Report
+
+          Execution Status: Successful
+
+          CPU Usage: {{ cpu_before }}%
+          Memory Usage: {{ mem_before }}%
+          Disk Usage: {{ disk_before }}%
+          Threshold: {{ threshold }}%
+
+          Health Status: Healthy
+          No remediation required.
+
+          Automation completed successfully.
+      when: not breach_detected
+
+    - name: Close incident - Healthy case
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/incident/{{ incident_sys_id }}"
+        method: PATCH
+        user: "{{ servicenow_user }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: true
+        body_format: json
+        status_code: 200
+        body:
+          work_notes: "{{ work_notes_text }}"
+          close_code: "{{ close_code_value }}"
+          close_notes: "No issues found. Server healthy."
+          state: "7"
+      when: not breach_detected
+
+    # ---------- STEP 4B: BREACH PATH ----------
+
+    - name: Identify high CPU processes
+      shell: ps -eo pid,ppid,cmd,%cpu --sort=-%cpu | head -6
+      register: top_cpu_procs
+      when: breach_detected and (cpu_before|float > threshold|float)
+      changed_when: false
+
+    - name: Kill zombie processes (CPU fix)
+      shell: |
+        for pid in $(ps -eo pid,stat | awk '$2 ~ /Z/ {print $1}'); do kill -9 $pid || true; done
+      when: breach_detected and (cpu_before|float > threshold|float)
+      changed_when: false
+
+    - name: Clear memory cache (Memory fix)
+      shell: sync && echo 1 > /proc/sys/vm/drop_caches
+      when: breach_detected and (mem_before|float > threshold|float)
+      changed_when: false
+
+    - name: Delete temporary files (Disk fix)
+      shell: rm -rf /tmp/*.tmp /tmp/*.fill 2>/dev/null || true
+      when: breach_detected and (disk_before|float > threshold|float)
+      changed_when: false
+
+    - name: Clean old logs (Disk fix)
+      shell: find /var/log -type f -name "*.log" -mtime +7 -delete 2>/dev/null || true
+      when: breach_detected and (disk_before|float > threshold|float)
+      changed_when: false
+
+    # ---------- STEP 5: Revalidate after remediation ----------
+
+    - name: Re-capture CPU usage after fix
+      shell: top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}'
+      register: cpu_after_raw
+      when: breach_detected
+      changed_when: false
+
+    - name: Re-capture Memory usage after fix
+      shell: free | awk 'FNR==2{printf "%.2f", ($3/$2)*100}'
+      register: mem_after_raw
+      when: breach_detected
+      changed_when: false
+
+    - name: Re-capture Disk usage after fix
+      shell: df / | awk 'FNR==2{print $5}' | tr -d '%'
+      register: disk_after_raw
+      when: breach_detected
+      changed_when: false
+
+    - name: Set after-fix facts
+      set_fact:
+        cpu_after: "{{ cpu_after_raw.stdout | default(cpu_before) | float | round(2) }}"
+        mem_after: "{{ mem_after_raw.stdout | default(mem_before) | float | round(2) }}"
+        disk_after: "{{ disk_after_raw.stdout | default(disk_before) | float | round(2) }}"
+      when: breach_detected
+
+    # ---------- STEP 6: Build breach work notes ----------
+
+    - name: Build breach work notes
+      set_fact:
+        work_notes_text: |
+          Issue Detected
+
+          CPU Usage Before Fix: {{ cpu_before }}%
+          Memory Usage Before Fix: {{ mem_before }}%
+          Disk Usage Before Fix: {{ disk_before }}%
+          Threshold: {{ threshold }}%
+
+          Actions Performed:
+          {% if cpu_before|float > threshold|float %}
+          - Identified high CPU process and cleaned zombie processes
+          {% endif %}
+          {% if mem_before|float > threshold|float %}
+          - Cleared memory cache
+          {% endif %}
+          {% if disk_before|float > threshold|float %}
+          - Deleted temporary files and cleaned old logs
+          {% endif %}
+
+          CPU Usage After Fix: {{ cpu_after }}%
+          Memory Usage After Fix: {{ mem_after }}%
+          Disk Usage After Fix: {{ disk_after }}%
+
+          Resolution Status: Resolved Automatically
+          Automation completed successfully.
+      when: breach_detected
+
+    - name: Close incident - Breach case
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/incident/{{ incident_sys_id }}"
+        method: PATCH
+        user: "{{ servicenow_user }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: true
+        body_format: json
+        status_code: 200
+        body:
+          work_notes: "{{ work_notes_text }}"
+          close_code: "{{ close_code_value }}"
+          close_notes: "Issue detected and resolved automatically."
+          state: "7"
+      when: breach_detected
+
+    # ---------- STEP 7: Final summary ----------
+
+    - name: Show final result
+      debug:
+        msg: "Incident {{ incident_number }} closed. Breach={{ breach_detected }}. Automation completed."

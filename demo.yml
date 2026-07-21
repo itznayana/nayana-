@@ -12,6 +12,7 @@
     servicenow_password: "3NCm2FUAWxGZ"
 
     close_code_value: "Solution provided"
+    incident_short_description: "Linux server health check requested"
 
   tasks:
 
@@ -51,28 +52,28 @@
       debug:
         msg: "CPU={{ cpu_before }}% MEM={{ mem_before }}% DISK={{ disk_before }}% Threshold={{ threshold }}% Breach={{ breach_detected }}"
 
-    # ---------- STEP 3: Create ServiceNow incident (always, for audit trail) ----------
+    # ---------- STEP 3: Find the open ServiceNow incident (created manually by a person) ----------
 
-    - name: Create ServiceNow incident record
+    - name: Search for open incident matching short description
       uri:
-        url: "{{ servicenow_instance }}/api/now/table/incident"
-        method: POST
+        url: "{{ servicenow_instance }}/api/now/table/incident?sysparm_query=short_description={{ incident_short_description | urlencode }}^active=true&sysparm_limit=1"
+        method: GET
         user: "{{ servicenow_user }}"
         password: "{{ servicenow_password }}"
         force_basic_auth: true
-        body_format: json
-        status_code: 201
-        body:
-          short_description: "Linux Health Check - {{ inventory_hostname }}"
-          description: "Automated health check execution started."
-          urgency: "3"
-          impact: "3"
-      register: incident_created
+        return_content: true
+        status_code: 200
+      register: incident_search
+
+    - name: Fail clearly if no open ticket was found
+      fail:
+        msg: "No open incident found with short description '{{ incident_short_description }}'. Please create one in ServiceNow first."
+      when: incident_search.json.result | length == 0
 
     - name: Save incident sys_id and number
       set_fact:
-        incident_sys_id: "{{ incident_created.json.result.sys_id }}"
-        incident_number: "{{ incident_created.json.result.number }}"
+        incident_sys_id: "{{ incident_search.json.result[0].sys_id }}"
+        incident_number: "{{ incident_search.json.result[0].number }}"
 
     # ---------- STEP 4A: HEALTHY PATH ----------
 
